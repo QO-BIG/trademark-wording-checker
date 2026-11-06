@@ -217,7 +217,13 @@ def render_results(data):
         }
         for r in results
     ]
-    st.dataframe(pd.DataFrame(display_rows), hide_index=True, width="stretch")
+    df = pd.DataFrame(display_rows)
+
+    def highlight_non_standard(row):
+        style = "background-color: #ffe9b3; color: #7a4a14" if row["Status"] == "Non-standard" else ""
+        return [style] * len(row)
+
+    st.dataframe(df.style.apply(highlight_non_standard, axis=1), hide_index=True, width="stretch")
 
     st.download_button(
         "Download Excel report",

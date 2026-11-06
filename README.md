@@ -35,7 +35,11 @@ streamlit run streamlit_app.py
 
 - **Upload official list** — load or refresh the IPOS/MyIPO reference list
   whenever the authority publishes an update. Saved as a versioned snapshot
-  under `data/reference/` so you don't need to re-upload it every session.
+  under `data/reference/` and committed to the repo, so a fresh clone (or a
+  Streamlit Community Cloud cold start, which wipes local disk) still has
+  the list without needing to re-upload. Only the TF-IDF similarity index
+  (`*.tfidf.pkl`) is excluded from git — it rebuilds automatically in a few
+  seconds on first use after a cold start.
 - **Check client wording** — upload a client's goods/services file (Word,
   PDF, or Excel) and get a per-item standard/non-standard verdict with
   suggested wording, downloadable as an Excel report.

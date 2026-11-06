@@ -217,44 +217,44 @@ def render_results(data):
         }
         for r in results
     ]
-    df = pd.DataFrame(display_rows)
 
-    def highlight_non_standard(row):
-        style = "background-color: #ffe9b3; color: #7a4a14" if row["Status"] == "Non-standard" else ""
-        return [style] * len(row)
-
-    st.dataframe(df.style.apply(highlight_non_standard, axis=1), hide_index=True, width="stretch")
+    st.caption("Edit any field below before downloading the report.")
+    edited_df = st.data_editor(
+        pd.DataFrame(display_rows),
+        num_rows="dynamic",
+        width="stretch",
+        key=f"results_editor_{data['filename']}",
+    )
 
     st.download_button(
         "Download Excel report",
-        data=build_excel_report(results),
+        data=build_excel_report(edited_df),
         file_name=f"wording-check-{data['authority']}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 
-def build_excel_report(results):
+def build_excel_report(edited_df):
     """Mirrors the working 'Goods Items / Your Suggestion' format: class
-    shown once per block, row number restarting at 1 per class, suggestion
-    left blank when the wording is already standard."""
+    shown once per block, row number restarting at 1 per class. Built from
+    the (possibly user-edited) results table, so manual corrections are
+    reflected in the download."""
     out_rows = []
     running_no = {}
     last_class = object()
-    for r in results:
-        cls = r.get("class") or ""
+    for _, row in edited_df.fillna("").iterrows():
+        cls = str(row.get("Class", "")).strip()
         running_no[cls] = running_no.get(cls, 0) + 1
-        item_text = r["input"].strip()
-        suggestion_text = ""
-        if r["status"] == "non_standard" and r["suggestions"]:
-            suggestion_text = r["suggestions"][0]["term"].strip()
-            if item_text.endswith(";") and not suggestion_text.endswith(";"):
-                suggestion_text += ";"
+        item_text = str(row.get("Client wording", "")).strip()
+        suggestion_text = str(row.get("Suggestion", "")).strip()
+        if item_text.endswith(";") and suggestion_text and not suggestion_text.endswith(";"):
+            suggestion_text += ";"
         out_rows.append({
             "Classes": cls if cls != last_class else "",
             "No.": running_no[cls],
             "Goods Items": item_text,
             "Your Suggestion": suggestion_text,
-            "Notes": r.get("reasoning", ""),
+            "Notes": str(row.get("Reasoning", "")).strip(),
         })
         last_class = cls
 

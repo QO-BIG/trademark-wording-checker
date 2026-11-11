@@ -7,6 +7,7 @@ Run with: streamlit run streamlit_app.py
 """
 import io
 import os
+import subprocess
 
 import pandas as pd
 import streamlit as st
@@ -17,6 +18,21 @@ from src import claude_extractor, claude_matcher, matcher, parsers, reference_st
 st.set_page_config(page_title="Trademark Wording Checker", page_icon="⚖️", layout="wide")
 
 LARGE_ROW_THRESHOLD = 1000
+
+
+def get_deployed_commit():
+    """Short git commit hash of the code currently running — lets you
+    confirm a Streamlit Cloud reboot actually picked up the latest push,
+    instead of guessing whether an error is a new bug or a stale deploy."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
 
 
 def get_api_key():
@@ -40,6 +56,10 @@ def sidebar():
         st.sidebar.warning(
             "No Anthropic API key set. Add ANTHROPIC_API_KEY to .streamlit/secrets.toml to enable Claude."
         )
+
+    commit = get_deployed_commit()
+    st.sidebar.caption(f"Build: {commit}" if commit else "Build: unknown (not a git checkout)")
+
     return page
 
 

@@ -193,25 +193,31 @@ def match_terms_with_claude(
                 }
                 continue
 
+            def _find_candidate(term):
+                key = matcher.normalize_literal(term)
+                return next(
+                    (c for c in item["candidates"] if matcher.normalize_literal(c["term"]) == key), None
+                )
+
             suggestion_term = (v.get("suggestion") or "").strip()
             suggestions = []
             if suggestion_term:
-                matching_candidate = next(
-                    (c for c in item["candidates"] if c["term"] == suggestion_term), None
-                )
+                matching_candidate = _find_candidate(suggestion_term)
+                # Trust our own verified reference data over Claude's self-reported
+                # class — Claude can mistakenly echo the client's stated class
+                # instead of the chosen term's actual official class, which would
+                # silently hide a real cross-class mismatch otherwise.
                 suggestions = [{
                     "term": suggestion_term,
-                    "class": v.get("class") or (matching_candidate["class"] if matching_candidate else ""),
+                    "class": (matching_candidate["class"] if matching_candidate else v.get("class")) or "",
                     "score": matching_candidate["score"] if matching_candidate else None,
                 }]
 
             for alt_term in v.get("alternatives") or []:
                 alt_term = (alt_term or "").strip()
-                if not alt_term or alt_term == suggestion_term:
+                if not alt_term or matcher.normalize_literal(alt_term) == matcher.normalize_literal(suggestion_term):
                     continue
-                matching_candidate = next(
-                    (c for c in item["candidates"] if c["term"] == alt_term), None
-                )
+                matching_candidate = _find_candidate(alt_term)
                 suggestions.append({
                     "term": alt_term,
                     "class": matching_candidate["class"] if matching_candidate else "",

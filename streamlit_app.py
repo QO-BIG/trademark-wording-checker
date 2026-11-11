@@ -209,7 +209,7 @@ def _flag_exact_duplicates(results):
     repeats in a client's list."""
     groups = {}
     for r in results:
-        key = matcher.normalize_literal(r["input"])
+        key = matcher.normalize_literal(str(r.get("input", "")))
         groups.setdefault(key, []).append(r)
     for group in groups.values():
         is_dup = len(group) > 1

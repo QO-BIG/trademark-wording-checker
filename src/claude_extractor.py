@@ -20,7 +20,15 @@ from pypdf import PdfReader
 from .claude_client import get_client
 
 DEFAULT_MODEL = "claude-sonnet-5"
-MAX_DUMP_CHARS = 60000
+# Overall safety ceiling on how much of a document gets sent at all.
+MAX_DUMP_CHARS = 200000
+# Per-call chunk size. A single extraction call over too much content risks
+# the structured-output response getting cut off mid-generation once there
+# are enough items to exceed the response token budget (seen in practice on
+# a ~430-item spreadsheet with the old single-call approach, which silently
+# produced nothing usable) — chunking keeps each call's expected output
+# small enough to always complete.
+CHUNK_CHARS = 12000
 
 EXTRACTION_TOOL = {
     "name": "report_extracted_wording",
@@ -119,20 +127,30 @@ def build_raw_dump(file_bytes, filename, max_chars=MAX_DUMP_CHARS):
     return (text[:max_chars] if truncated else text), truncated
 
 
-def extract_wording_with_claude(file_bytes, filename, authority, api_key=None, model=DEFAULT_MODEL):
-    """Returns (items, truncated) where items is a list of {"class","term"}."""
-    raw_text, truncated = build_raw_dump(file_bytes, filename)
-    if not raw_text.strip():
-        return [], truncated
+def _chunk_text(text, chunk_size=CHUNK_CHARS):
+    """Splits on line boundaries so a single row's wrapped continuation
+    text isn't likely to be torn apart mid-chunk."""
+    lines = text.split("\n")
+    chunks, current, current_len = [], [], 0
+    for line in lines:
+        current.append(line)
+        current_len += len(line) + 1
+        if current_len >= chunk_size:
+            chunks.append("\n".join(current))
+            current, current_len = [], 0
+    if current:
+        chunks.append("\n".join(current))
+    return chunks or [text]
 
-    client = get_client(api_key)
+
+def _extract_from_chunk(client, chunk, filename, authority, model, part_info):
     prompt = (
         f"Filename: {filename}\n"
-        f"Target authority for this check: {authority.upper()}\n\n"
+        f"Target authority for this check: {authority.upper()}\n"
+        f"{part_info}\n\n"
         "Raw extracted document content follows:\n-----\n"
-        f"{raw_text}\n-----"
+        f"{chunk}\n-----"
     )
-
     resp = client.messages.create(
         model=model,
         max_tokens=8192,
@@ -141,8 +159,33 @@ def extract_wording_with_claude(file_bytes, filename, authority, api_key=None, m
         tool_choice={"type": "tool", "name": "report_extracted_wording"},
         messages=[{"role": "user", "content": prompt}],
     )
-
     for block in resp.content:
         if block.type == "tool_use" and block.name == "report_extracted_wording":
-            return block.input.get("items", []), truncated
-    return [], truncated
+            return block.input.get("items", [])
+    return []
+
+
+def extract_wording_with_claude(
+    file_bytes, filename, authority, api_key=None, model=DEFAULT_MODEL, progress_callback=None
+):
+    """Returns (items, truncated) where items is a list of {"class","term"}.
+
+    Large documents are split into chunks and extracted independently —
+    one call over too much content risks the structured-output response
+    getting cut off mid-generation once there are enough items to exceed
+    the response token budget."""
+    raw_text, truncated = build_raw_dump(file_bytes, filename)
+    if not raw_text.strip():
+        return [], truncated
+
+    client = get_client(api_key)
+    chunks = _chunk_text(raw_text)
+
+    all_items = []
+    for i, chunk in enumerate(chunks):
+        part_info = f"(Part {i + 1} of {len(chunks)} of the document content.)" if len(chunks) > 1 else ""
+        all_items.extend(_extract_from_chunk(client, chunk, filename, authority, model, part_info))
+        if progress_callback:
+            progress_callback(i + 1, len(chunks))
+
+    return all_items, truncated

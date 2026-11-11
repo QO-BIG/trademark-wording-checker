@@ -130,14 +130,20 @@ def check_page():
 
     cache_key = (uploaded.name, uploaded.size, authority)
     if st.session_state.get("check_cache_key") != cache_key:
-        with st.spinner(f"Reading {uploaded.name} with Claude..."):
-            try:
-                items, truncated = claude_extractor.extract_wording_with_claude(
-                    uploaded.getvalue(), uploaded.name, authority, api_key=api_key
-                )
-            except Exception as e:
-                st.error(f"Claude document extraction failed: {e}")
-                return
+        progress = st.progress(0.0, text=f"Reading {uploaded.name} with Claude...")
+
+        def on_extract_progress(done, total):
+            progress.progress(done / total if total else 1.0, text=f"Reading {uploaded.name} with Claude... part {done}/{total}")
+
+        try:
+            items, truncated = claude_extractor.extract_wording_with_claude(
+                uploaded.getvalue(), uploaded.name, authority, api_key=api_key,
+                progress_callback=on_extract_progress,
+            )
+        except Exception as e:
+            st.error(f"Claude document extraction failed: {e}")
+            return
+        progress.empty()
         if truncated:
             st.warning(
                 "This document was very large and had to be truncated before sending to Claude — "

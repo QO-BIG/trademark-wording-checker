@@ -262,28 +262,13 @@ def render_results(data):
         {
             "Class": r.get("class", ""),
             "Client wording": r["input"],
-            "Status": "Standard" if r["status"] == "standard" else "Non-standard",
+            "Status": "Standard" if r["status"] == "standard" else "⚠️ Non-standard",
             "Suggestion": r["suggestions"][0]["term"] if r["suggestions"] else "",
-            "Duplicate": "Yes" if r.get("is_duplicate") else "",
+            "Duplicate": "🔁 Yes" if r.get("is_duplicate") else "",
             "Reasoning": r.get("reasoning", ""),
         }
         for r in results
     ]
-
-    def highlight_row(row):
-        style = ""
-        if row["Status"] == "Non-standard":
-            style = "color: #b00020; font-weight: 600;"
-        if row["Duplicate"] == "Yes":
-            style += " background-color: #fff3cd;"
-        return [style] * len(row)
-
-    st.caption("Non-standard rows in red, exact duplicates highlighted (read-only view):")
-    st.dataframe(
-        pd.DataFrame(display_rows).style.apply(highlight_row, axis=1),
-        hide_index=True,
-        width="stretch",
-    )
 
     st.caption("Edit any field below before downloading the report.")
     edited_df = st.data_editor(
@@ -332,8 +317,8 @@ def build_excel_report(edited_df):
         })
         last_class = cls
         row_flags.append((
-            str(row.get("Status", "")).strip() == "Non-standard",
-            str(row.get("Duplicate", "")).strip() == "Yes",
+            "Non-standard" in str(row.get("Status", "")),
+            "Yes" in str(row.get("Duplicate", "")),
         ))
 
     df = pd.DataFrame(out_rows)

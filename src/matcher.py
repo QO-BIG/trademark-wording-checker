@@ -43,7 +43,7 @@ SYNONYMS = {
 _INDEX_CACHE = {}  # (authority, version_id) -> (vectorizer, matrix)
 
 
-def _normalize_literal(text):
+def normalize_literal(text):
     """Lowercase/whitespace/trailing-punctuation normalization only — used
     for the exact-match check, so e.g. a trailing ';' doesn't turn an
     already-standard term into a false "non-standard" result, but two
@@ -58,7 +58,7 @@ def _normalize_for_similarity(text):
     candidates, never to decide whether something already counts as an
     exact, standard match.
     """
-    t = _normalize_literal(text)
+    t = normalize_literal(text)
     for phrase, canonical in SYNONYMS.items():
         if phrase in t:
             t = t.replace(phrase, canonical)
@@ -110,7 +110,7 @@ def prepare_candidates(client_terms, authority, top_k=15):
 
     rows = reference["rows"]
     ref_terms = [r["term"] for r in rows]
-    ref_terms_literal = [_normalize_literal(t) for t in ref_terms]
+    ref_terms_literal = [normalize_literal(t) for t in ref_terms]
     ref_terms_for_similarity = [_normalize_for_similarity(t) for t in ref_terms]
     literal_lookup = {t: i for i, t in enumerate(ref_terms_literal)}
 
@@ -120,7 +120,7 @@ def prepare_candidates(client_terms, authority, top_k=15):
     pending_indices, pending_normalized = [], []
 
     for i, raw_term in enumerate(client_terms):
-        literal = _normalize_literal(raw_term)
+        literal = normalize_literal(raw_term)
         if literal in literal_lookup:
             idx = literal_lookup[literal]
             out[i] = {

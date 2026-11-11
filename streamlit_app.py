@@ -10,8 +10,9 @@ import os
 
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Font, PatternFill
 
-from src import claude_extractor, claude_matcher, parsers, reference_store
+from src import claude_extractor, claude_matcher, matcher, parsers, reference_store
 
 st.set_page_config(page_title="Trademark Wording Checker", page_icon="⚖️", layout="wide")
 
@@ -192,10 +193,46 @@ def check_page():
         for r, cls in zip(results, classes):
             r["class"] = cls
 
+        _flag_exact_duplicates(results)
+        _add_cross_class_notes(results)
+
         st.session_state["check_results"] = {"authority": authority, "filename": filename, "results": results}
 
     if "check_results" in st.session_state:
         render_results(st.session_state["check_results"])
+
+
+def _flag_exact_duplicates(results):
+    """Flags items whose wording is an EXACT duplicate of another item in
+    this same batch — literal, normalized-text match only, never
+    similar/overlapping wording — so reviewers can catch accidental
+    repeats in a client's list."""
+    groups = {}
+    for r in results:
+        key = matcher.normalize_literal(r["input"])
+        groups.setdefault(key, []).append(r)
+    for group in groups.values():
+        is_dup = len(group) > 1
+        for r in group:
+            r["is_duplicate"] = is_dup
+
+
+def _add_cross_class_notes(results):
+    """If the best-fitting official term belongs to a different NICE class
+    than the client specified for this item, note it — the wording itself
+    may be standard, just classified under a different class than filed."""
+    for r in results:
+        if not r["suggestions"]:
+            continue
+        client_cls = (r.get("class") or "").strip().lstrip("0")
+        official_cls = (r["suggestions"][0].get("class") or "").strip().lstrip("0")
+        if client_cls and official_cls and client_cls != official_cls:
+            official_cls_display = r["suggestions"][0]["class"]
+            if r["status"] == "standard":
+                note = f"Standard wording, but classified under Class {official_cls_display}, not the stated Class {r['class']}."
+            else:
+                note = f"Suggested wording is classified under Class {official_cls_display}, not the stated Class {r['class']}."
+            r["reasoning"] = f"{r.get('reasoning', '')} {note}".strip()
 
 
 def render_results(data):
@@ -208,10 +245,18 @@ def render_results(data):
         st.error(f"No {data['authority'].upper()} list is loaded yet. Upload one first.")
         return
 
+    duplicate_count = sum(1 for r in results if r.get("is_duplicate"))
     st.write(
         f"{data['filename']} checked against **{data['authority'].upper()}** — "
-        f"{len(results)} items, **{non_standard_count} non-standard**."
+        f"{len(results)} items, **{non_standard_count} non-standard**"
+        + (f", **{duplicate_count} exact duplicate(s)**" if duplicate_count else "")
+        + "."
     )
+    if duplicate_count:
+        st.warning(
+            f"{duplicate_count} item(s) are exact duplicates of another item in this list "
+            "(same wording, not just similar) — see the Duplicate column below."
+        )
 
     display_rows = [
         {
@@ -219,6 +264,7 @@ def render_results(data):
             "Client wording": r["input"],
             "Status": "Standard" if r["status"] == "standard" else "Non-standard",
             "Suggestion": r["suggestions"][0]["term"] if r["suggestions"] else "",
+            "Duplicate": "Yes" if r.get("is_duplicate") else "",
             "Reasoning": r.get("reasoning", ""),
         }
         for r in results
@@ -240,12 +286,19 @@ def render_results(data):
     )
 
 
+NON_STANDARD_FONT = Font(color="CC0000")
+DUPLICATE_FILL = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+
+
 def build_excel_report(edited_df):
     """Mirrors the working 'Goods Items / Your Suggestion' format: class
     shown once per block, row number restarting at 1 per class. Built from
     the (possibly user-edited) results table, so manual corrections are
-    reflected in the download."""
+    reflected in the download. Non-standard rows get red font; rows that
+    are an EXACT duplicate of another row's wording (not similar/
+    overlapping — literal text match only) get a yellow highlight."""
     out_rows = []
+    row_flags = []  # (is_non_standard, is_duplicate), parallel to out_rows
     running_no = {}
     last_class = object()
     for _, row in edited_df.fillna("").iterrows():
@@ -263,19 +316,29 @@ def build_excel_report(edited_df):
             "Notes": str(row.get("Reasoning", "")).strip(),
         })
         last_class = cls
+        row_flags.append((
+            str(row.get("Status", "")).strip() == "Non-standard",
+            str(row.get("Duplicate", "")).strip() == "Yes",
+        ))
 
     df = pd.DataFrame(out_rows)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Wording Check")
+        ws = writer.sheets["Wording Check"]
+        for excel_row, (is_non_standard, is_duplicate) in enumerate(row_flags, start=2):  # row 1 is the header
+            for col_idx in range(1, len(df.columns) + 1):
+                cell = ws.cell(row=excel_row, column=col_idx)
+                if is_non_standard:
+                    cell.font = NON_STANDARD_FONT
+                if is_duplicate:
+                    cell.fill = DUPLICATE_FILL
     return buf.getvalue()
 
 
 def main():
     page = sidebar()
-    if page == "Dashboard":
-        dashboard_page()
-    elif page == "Upload official list":
+    if page == "Upload official list":
         upload_page()
     elif page == "Check client wording":
         check_page()

@@ -30,7 +30,7 @@ REVIEW_TOOL = {
                         "status": {"type": "string", "enum": ["standard", "non_standard"]},
                         "suggestion": {
                             "type": "string",
-                            "description": "The official wording this item corresponds to, copied VERBATIM from this item's candidate list — always provide this: if status is standard, the official term the wording already matches; if non_standard, the corrected wording to use instead. Empty string ONLY if status is non_standard and no candidate genuinely fits.",
+                            "description": "The official wording this item corresponds to, copied VERBATIM from this item's candidate list — always provide this: if status is standard, the official term the wording already matches; if non_standard, the corrected wording to use instead. If the client's single line actually names more than one distinct accepted concept (e.g. 'glue and adhesives for industrial purposes' covering two separate official terms), include each matching official term here separated by '; ' — do not silently drop one of them for a single-term answer. Empty string ONLY if status is non_standard and no candidate genuinely fits.",
                         },
                         "class": {
                             "type": "string",
@@ -66,9 +66,17 @@ VERBATIM from the candidate list — every item should show the official wording
 just the ones that need correcting.
 - "non_standard": anything an examiner would require amending — a synonym, non-standard business phrasing \
 (e.g. "online retail store services" instead of "retail services"), a typo, wrong specificity, outdated \
-terminology, etc. Pick the single best-fitting official term from THIS ITEM'S candidate list as the \
-suggestion, copied VERBATIM (exact spelling/wording) from that list. If none of the candidates genuinely \
-capture the intended meaning, leave suggestion empty and say why in reasoning.
+terminology, etc. Pick the best-fitting official term(s) from THIS ITEM'S candidate list as the suggestion, \
+copied VERBATIM (exact spelling/wording) from that list. If none of the candidates genuinely capture the \
+intended meaning, leave suggestion empty and say why in reasoning.
+- If the client's single line actually names more than one distinct accepted concept (e.g. "glue and \
+adhesives for industrial purposes" really covers two separate official terms, "Glues for industrial \
+purposes" and "Adhesives for industrial purposes"), include every matching official term in the \
+suggestion, separated by "; " — never silently drop one of the concepts just to give a single-term answer.
+- When multiple candidates are each plausible and you must pick one, prefer whichever shares the most \
+literal key nouns/words with the client's wording (e.g. for "priming putty", a candidate containing the \
+word "putty" is a stronger match than one that only shares "priming") — don't let a looser semantic \
+association outrank a closer literal match.
 - If the best-fitting candidate belongs to a different NICE class than the client specified for this item, \
 still select it as the suggestion — don't discard a good match over its class label — and say so explicitly \
 in reasoning (e.g. "Standard wording, but properly classified under Class 35 rather than the stated Class 42").

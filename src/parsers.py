@@ -18,6 +18,16 @@ CLASS_HEADER_RE = re.compile(r"^\s*class\s*(\d{1,2})\b", re.IGNORECASE)
 # i.e. a running row number, then a NICE class number, then the term text.
 NUMBERED_TABLE_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d{1,2})\s+(.+?)\s*$")
 
+# Some pages of the same export split the running row number onto its own
+# line(s) instead (e.g. "10720" / "2" / "37 installation and maintenance of
+# hardware..."), so the content line only starts with the class number.
+CLASS_ONLY_ROW_RE = re.compile(r"^\s*(\d{1,2})\s+(.+?)\s*$")
+
+# A row-number fragment on its own line, from the split-numbering pages above.
+STANDALONE_DIGITS_RE = re.compile(r"^\s*\d+\s*$")
+
+MAX_NICE_CLASS = 45
+
 PDF_BOILERPLATE_RE = re.compile(
     r"^(list of trademark classes|class:\s*all|goods and services:\s*all|"
     r"no\.?\s*class\s*goods and services|page \d+ of \d+)\s*$",
@@ -163,6 +173,13 @@ def _lines_to_class_term_rows(lines):
 
 
 MIN_NUMBERED_ROWS_TO_CONFIRM_FORMAT = 20
+# A genuine wrapped line is at most 1-2 extra lines. If a stretch of the
+# document stops matching the numbered-row pattern for longer than this
+# (e.g. a layout change partway through a multi-thousand-page PDF), it's no
+# longer a line wrap — it's a different section — so stop gluing text onto
+# the previous row instead of silently merging unrelated content into one
+# unusable blob entry.
+MAX_CONTINUATION_LINES = 3
 
 
 def _rows_from_numbered_table(lines):
@@ -174,20 +191,37 @@ def _rows_from_numbered_table(lines):
     Long terms often wrap onto a second line with no leading numbers (the
     PDF just breaks the sentence) — any non-matching, non-boilerplate line
     that follows a matched row is treated as a continuation of that row's
-    term rather than as evidence this isn't a numbered table at all.
+    term, bounded by MAX_CONTINUATION_LINES so a genuine format change
+    elsewhere in the document can't cascade into one giant merged entry.
     """
     rows = []
     matched_count = 0
+    continuation_streak = 0
     for raw in lines:
         line = raw.strip()
-        if not line or PDF_BOILERPLATE_RE.match(line):
+        if not line or PDF_BOILERPLATE_RE.match(line) or STANDALONE_DIGITS_RE.match(line):
             continue
+
         m = NUMBERED_TABLE_ROW_RE.match(line)
-        if m:
+        if m and 1 <= int(m.group(2)) <= MAX_NICE_CLASS:
             rows.append({"class": m.group(2), "term": m.group(3).strip()})
             matched_count += 1
-        elif rows:
+            continuation_streak = 0
+            continue
+
+        m2 = CLASS_ONLY_ROW_RE.match(line)
+        if m2 and 1 <= int(m2.group(1)) <= MAX_NICE_CLASS:
+            rows.append({"class": m2.group(1), "term": m2.group(2).strip()})
+            matched_count += 1
+            continuation_streak = 0
+            continue
+
+        if rows and continuation_streak < MAX_CONTINUATION_LINES:
             rows[-1]["term"] = f"{rows[-1]['term']} {line}".strip()
+            continuation_streak += 1
+        # else: too many consecutive non-matching lines — likely a
+        # different section of the document, not a wrapped line. Drop it
+        # rather than corrupting the previous row.
 
     if matched_count < MIN_NUMBERED_ROWS_TO_CONFIRM_FORMAT:
         return None  # doesn't look like this format

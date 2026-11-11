@@ -262,19 +262,40 @@ def render_results(data):
         {
             "Class": r.get("class", ""),
             "Client wording": r["input"],
-            "Status": "Standard" if r["status"] == "standard" else "⚠️ Non-standard",
+            "Status": "Standard" if r["status"] == "standard" else "Non-standard",
             "Suggestion": r["suggestions"][0]["term"] if r["suggestions"] else "",
-            "Duplicate": "🔁 Yes" if r.get("is_duplicate") else "",
+            "Duplicate": "Yes" if r.get("is_duplicate") else "",
             "Reasoning": r.get("reasoning", ""),
         }
         for r in results
     ]
 
-    st.caption("Edit any field below before downloading the report.")
+    def highlight_row(row):
+        style = ""
+        if row["Status"] == "Non-standard":
+            style = "color: #b00020; font-weight: 600;"
+        if row["Duplicate"] == "Yes":
+            style += " background-color: #fff3cd;"
+        return [style] * len(row)
+
+    # A Styler's colors only render for read-only columns in st.data_editor —
+    # editable cells are live input widgets and can't carry custom CSS. Status
+    # and Duplicate are computed, not meant to be hand-typed over, so they're
+    # the ones made read-only here in exchange for genuine red/yellow styling;
+    # everything else (class, wording, suggestion, reasoning) stays editable.
+    styled = pd.DataFrame(display_rows).style.apply(highlight_row, axis=1)
+
+    st.caption(
+        "Status/Duplicate are read-only (colored); edit any other field before downloading the report."
+    )
     edited_df = st.data_editor(
-        pd.DataFrame(display_rows),
+        styled,
         num_rows="dynamic",
         width="stretch",
+        column_config={
+            "Status": st.column_config.Column(disabled=True),
+            "Duplicate": st.column_config.Column(disabled=True),
+        },
         key=f"results_editor_{data['filename']}",
     )
 

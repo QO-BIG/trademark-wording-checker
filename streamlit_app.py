@@ -270,6 +270,21 @@ def render_results(data):
         for r in results
     ]
 
+    def highlight_row(row):
+        style = ""
+        if row["Status"] == "Non-standard":
+            style = "color: #b00020; font-weight: 600;"
+        if row["Duplicate"] == "Yes":
+            style += " background-color: #fff3cd;"
+        return [style] * len(row)
+
+    st.caption("Non-standard rows in red, exact duplicates highlighted (read-only view):")
+    st.dataframe(
+        pd.DataFrame(display_rows).style.apply(highlight_row, axis=1),
+        hide_index=True,
+        width="stretch",
+    )
+
     st.caption("Edit any field below before downloading the report.")
     edited_df = st.data_editor(
         pd.DataFrame(display_rows),

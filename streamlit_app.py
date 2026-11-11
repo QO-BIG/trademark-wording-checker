@@ -183,7 +183,7 @@ def check_page():
 
         try:
             results = claude_matcher.match_terms_with_claude(
-                terms, authority, api_key=api_key, progress_callback=on_progress
+                terms, authority, client_classes=classes, api_key=api_key, progress_callback=on_progress
             )
         except Exception as e:
             st.error(f"Claude review failed: {e}")
@@ -264,6 +264,7 @@ def render_results(data):
             "Client wording": r["input"],
             "Status": "Standard" if r["status"] == "standard" else "Non-standard",
             "Suggestion": r["suggestions"][0]["term"] if r["suggestions"] else "",
+            "Alternatives": "; ".join(s["term"] for s in r["suggestions"][1:]),
             "Duplicate": "Yes" if r.get("is_duplicate") else "",
             "Reasoning": r.get("reasoning", ""),
         }
@@ -334,6 +335,7 @@ def build_excel_report(edited_df):
             "No.": running_no[cls],
             "Goods Items": item_text,
             "Your Suggestion": suggestion_text,
+            "Alternatives": str(row.get("Alternatives", "")).strip(),
             "Notes": str(row.get("Reasoning", "")).strip(),
         })
         last_class = cls

@@ -92,13 +92,27 @@ def _get_index(authority, version_id, ref_terms_normalized):
     return vectorizer, matrix
 
 
-def prepare_candidates(client_terms, authority, top_k=15):
+def _normalize_class(cls):
+    return (cls or "").strip().lstrip("0")
+
+
+def prepare_candidates(client_terms, authority, client_classes=None, top_k=20, cross_class_k=5):
     """Shortlist step shared by the local matcher and the Claude-reviewed
     matcher: for each client term, either it's a literal exact match to an
     official term (cheap, confident, no need to spend an API call on it),
-    or it gets a ranked shortlist of the top_k closest official terms by
-    TF-IDF + fuzzy similarity for a smarter reviewer (e.g. Claude) to pick
-    from, since sending the full 100k+ term list per query isn't feasible.
+    or it gets a ranked shortlist of candidate official terms by TF-IDF +
+    fuzzy similarity for a smarter reviewer (e.g. Claude) to pick from,
+    since sending the full 100k+ term list per query isn't feasible.
+
+    When the client's stated class for an item is known, ranking is done
+    primarily WITHIN that class rather than across the whole list: a
+    correct-but-lexically-different term (e.g. "Impregnated cloths for
+    polishing" for a client's "Polishing cloth") can rank far outside a
+    top-20 cut when competing against 100k+ cross-class terms, but much
+    closer when only competing within its own ~2-3k-term class. A smaller
+    top cross_class_k candidates from the full list are still included so a
+    term correctly classified elsewhere (the earlier "Repair of computers"
+    class-mismatch case) can still be surfaced and flagged.
 
     Returns (reference_or_None, list of per-term dicts):
       {"input": str, "exact_match": {"term","class"} | None,
@@ -113,6 +127,7 @@ def prepare_candidates(client_terms, authority, top_k=15):
     ref_terms_literal = [normalize_literal(t) for t in ref_terms]
     ref_terms_for_similarity = [_normalize_for_similarity(t) for t in ref_terms]
     literal_lookup = {t: i for i, t in enumerate(ref_terms_literal)}
+    ref_classes_norm = [_normalize_class(r["class"]) for r in rows]
 
     vectorizer, ref_matrix = _get_index(authority, reference["version_id"], ref_terms_for_similarity)
 
@@ -143,10 +158,22 @@ def prepare_candidates(client_terms, authority, top_k=15):
                 fuzz.token_sort_ratio(norm_term, t) / 100.0 for t in ref_terms_for_similarity
             ])
             blended = 0.6 * sim_row + 0.4 * fuzzy_scores
-            top_idx = np.argsort(-blended)[:top_k]
+
+            client_cls = _normalize_class(client_classes[global_i]) if client_classes else ""
+            if client_cls:
+                same_class_idx = [j for j, c in enumerate(ref_classes_norm) if c == client_cls]
+                same_class_top = sorted(same_class_idx, key=lambda j: -blended[j])[:top_k]
+                same_class_set = set(same_class_top)
+                cross_top = [
+                    j for j in np.argsort(-blended) if j not in same_class_set
+                ][:cross_class_k]
+                selected = same_class_top + list(cross_top)
+            else:
+                selected = list(np.argsort(-blended)[:top_k])
+
             candidates = [
                 {"term": ref_terms[idx], "class": rows[idx]["class"], "score": round(float(blended[idx]), 4)}
-                for idx in top_idx
+                for idx in selected
             ]
             out[global_i] = {
                 "input": client_terms[global_i],

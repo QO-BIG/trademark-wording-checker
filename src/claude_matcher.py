@@ -36,9 +36,14 @@ REVIEW_TOOL = {
                             "type": "string",
                             "description": "NICE class of the suggestion, copied from the candidate list. Empty string only if suggestion is empty.",
                         },
+                        "alternatives": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Other official terms from this item's candidate list that could also reasonably apply, when genuinely ambiguous — e.g. two candidates are both plausible interpretations of a vague client term, and a human reviewer should pick between them. Each copied verbatim. Leave empty when there is one clearly best answer; don't pad this with weaker options just to fill it.",
+                        },
                         "reasoning": {"type": "string", "description": "One short sentence explaining the verdict."},
                     },
-                    "required": ["input", "status", "suggestion", "class", "reasoning"],
+                    "required": ["input", "status", "suggestion", "class", "alternatives", "reasoning"],
                 },
             }
         },
@@ -126,17 +131,25 @@ def review_batch(batch, authority, api_key=None, model=DEFAULT_MODEL):
 def match_terms_with_claude(
     client_terms,
     authority,
+    client_classes=None,
     api_key=None,
     model=DEFAULT_MODEL,
-    top_k_candidates=15,
+    top_k_candidates=20,
     batch_size=DEFAULT_BATCH_SIZE,
     progress_callback=None,
 ):
     """Full pipeline: local shortlist, then Claude review for everything
     that isn't a literal exact match. Returns one dict per input term:
       {"input","status","best_score","suggestions":[{term,class,score}],"reasoning"}
+
+    client_classes (optional): parallel list of the class the client stated
+    for each term — when known, candidate ranking is scoped primarily to
+    that class so a correct-but-lexically-different term isn't drowned out
+    by the other 100k+ cross-class terms (see matcher.prepare_candidates).
     """
-    reference, prepared = matcher.prepare_candidates(client_terms, authority, top_k=top_k_candidates)
+    reference, prepared = matcher.prepare_candidates(
+        client_terms, authority, client_classes=client_classes, top_k=top_k_candidates
+    )
     if reference is None:
         return [
             {"input": t, "status": "no_reference_loaded", "best_score": None, "suggestions": [], "reasoning": ""}
@@ -191,6 +204,19 @@ def match_terms_with_claude(
                     "class": v.get("class") or (matching_candidate["class"] if matching_candidate else ""),
                     "score": matching_candidate["score"] if matching_candidate else None,
                 }]
+
+            for alt_term in v.get("alternatives") or []:
+                alt_term = (alt_term or "").strip()
+                if not alt_term or alt_term == suggestion_term:
+                    continue
+                matching_candidate = next(
+                    (c for c in item["candidates"] if c["term"] == alt_term), None
+                )
+                suggestions.append({
+                    "term": alt_term,
+                    "class": matching_candidate["class"] if matching_candidate else "",
+                    "score": matching_candidate["score"] if matching_candidate else None,
+                })
 
             results[global_i] = {
                 "input": item["input"],

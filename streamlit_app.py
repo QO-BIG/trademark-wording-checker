@@ -1,7 +1,9 @@
-"""Streamlit app:
-  - Check client wording upload a client's wording and get Claude-reviewed
-                          suggestions based on the currently loaded list
-  - Upload official list refresh the list when IPOS/MyIPO publish an update
+"""Streamlit app: upload a client's goods/services wording and get
+Claude-reviewed suggestions — Claude judges standard/non-standard and
+suggests corrections from its own knowledge of IPOS/MyIPO conventions, the
+same as pasting the document into a Claude chat and asking it to check it.
+There is no local reference list; nothing here is grounded in a downloaded,
+verifiable official list.
 
 Run with: streamlit run streamlit_app.py
 """
@@ -13,11 +15,9 @@ import pandas as pd
 import streamlit as st
 from openpyxl.styles import Font, PatternFill
 
-from src import claude_extractor, claude_matcher, matcher, parsers, reference_store
+from src import claude_extractor, claude_matcher
 
 st.set_page_config(page_title="Trademark Wording Checker", page_icon="⚖️", layout="wide")
-
-LARGE_ROW_THRESHOLD = 1000
 
 
 def get_deployed_commit():
@@ -47,9 +47,7 @@ def get_api_key():
 
 def sidebar():
     st.sidebar.title("Trademark Wording Checker")
-    page = st.sidebar.radio("Go to", ["Check client wording", "Upload official list"])
 
-    st.sidebar.divider()
     if get_api_key():
         st.sidebar.success("Anthropic API key configured.")
     else:
@@ -60,83 +58,22 @@ def sidebar():
     commit = get_deployed_commit()
     st.sidebar.caption(f"Build: {commit}" if commit else "Build: unknown (not a git checkout)")
 
-    return page
 
-
-def _guess_cols_ui(columns, guessed_class_col, guessed_term_col, key_prefix, uniq):
-    col1, col2 = st.columns(2)
-    class_options = ["(none)"] + columns
-    class_index = class_options.index(guessed_class_col) if guessed_class_col in columns else 0
-    term_index = columns.index(guessed_term_col) if guessed_term_col in columns else 0
-
-    with col1:
-        class_col = st.selectbox(
-            "Class column (optional)", class_options, index=class_index, key=f"{key_prefix}_class_col_{uniq}"
-        )
-    with col2:
-        term_col = st.selectbox(
-            "Wording column", columns, index=term_index, key=f"{key_prefix}_term_col_{uniq}"
-        )
-
-    return (None if class_col == "(none)" else class_col), term_col
-
-
-def upload_page():
-    st.title("Upload official wording list")
-    st.caption("Use this whenever IPOS or MyIPO publishes an updated pre-approved goods/services list.")
-
-    authority = st.selectbox("Authority", ["ipos", "myipo"], format_func=str.upper, key="upload_authority_select")
-    uploaded = st.file_uploader("File", type=["xlsx", "xls", "csv", "pdf", "docx"], key="upload_file")
-
-    if uploaded is None:
-        return
-
-    cache_key = (uploaded.name, uploaded.size, authority)
-    if st.session_state.get("upload_cache_key") != cache_key:
-        with st.spinner(f"Parsing {uploaded.name}..."):
-            st.session_state["upload_parsed"] = parsers.parse_upload(uploaded.getvalue(), uploaded.name)
-        st.session_state["upload_cache_key"] = cache_key
-        st.session_state["upload_filename"] = uploaded.name
-
-    parsed = st.session_state["upload_parsed"]
-    filename = st.session_state["upload_filename"]
-    uniq = f"{filename}_{uploaded.size}"
-
-    if parsed["kind"] == "tabular":
-        class_col, term_col = _guess_cols_ui(
-            parsed["columns"], parsed["guessed_class_col"], parsed["guessed_term_col"], "upload", uniq
-        )
-        rows = parsers.rows_from_tabular(parsed["all_rows"], class_col, term_col)
-    else:
-        rows = parsed["all_rows"]
-
-    st.write(f"**{len(rows):,}** terms detected for **{authority.upper()}** from {filename}.")
-
-    if len(rows) > LARGE_ROW_THRESHOLD:
-        st.info("List is large — showing a preview only. Check the sample looks right, then confirm to save the full list.")
-        st.dataframe(pd.DataFrame(rows[:30]), hide_index=True, width="stretch")
-        if st.button(f"Save all {len(rows):,} terms as new {authority.upper()} version", type="primary"):
-            version_id = reference_store.save_new_version(authority, rows, filename)
-            st.success(f"{authority.upper()} list updated: version {version_id} with {len(rows):,} terms loaded.")
-    else:
-        st.caption("Edit any row below to fix misparsed entries before saving.")
-        edited_df = st.data_editor(
-            pd.DataFrame(rows), num_rows="dynamic", width="stretch", key=f"upload_editor_{uniq}"
-        )
-        if st.button(f"Save {len(edited_df)} terms as new {authority.upper()} version", type="primary"):
-            final_rows = [r for r in edited_df.fillna("").to_dict("records") if str(r.get("term", "")).strip()]
-            version_id = reference_store.save_new_version(authority, final_rows, filename)
-            st.success(f"{authority.upper()} list updated: version {version_id} with {len(final_rows)} terms loaded.")
+def _normalize_literal(text):
+    """Lowercase/whitespace/trailing-punctuation normalization for exact
+    duplicate detection — literal text match only, never similar/
+    overlapping wording."""
+    t = " ".join(text.strip().lower().split())
+    return t.rstrip(";:.,")
 
 
 def check_page():
     st.title("Check client wording")
-    st.caption("Upload the client's requested goods/services wording to check it against the current official list.")
-
-    summary = reference_store.status_summary()
-    status_cols = st.columns(len(summary))
-    for col, (a, info) in zip(status_cols, summary.items()):
-        col.metric(a.upper(), f"{info['term_count']:,} terms", info["current_version"] or "none loaded")
+    st.caption(
+        "Upload the client's requested goods/services wording. Claude reads the document directly and "
+        "reviews each item against its own knowledge of IPOS/MyIPO classification conventions — there's no "
+        "downloaded official list behind this, so treat suggestions as a strong first pass, not a verified source."
+    )
 
     authority = st.selectbox("Check against", ["ipos", "myipo"], format_func=str.upper, key="check_authority_select")
 
@@ -229,7 +166,7 @@ def _flag_exact_duplicates(results):
     repeats in a client's list."""
     groups = {}
     for r in results:
-        key = matcher.normalize_literal(str(r.get("input", "")))
+        key = _normalize_literal(str(r.get("input", "")))
         groups.setdefault(key, []).append(r)
     for group in groups.values():
         is_dup = len(group) > 1
@@ -258,12 +195,8 @@ def _add_cross_class_notes(results):
 def render_results(data):
     results = data["results"]
     non_standard_count = sum(1 for r in results if r["status"] == "non_standard")
-    no_reference = any(r["status"] == "no_reference_loaded" for r in results)
 
     st.subheader("Results")
-    if no_reference:
-        st.error(f"No {data['authority'].upper()} list is loaded yet. Upload one first.")
-        return
 
     duplicate_count = sum(1 for r in results if r.get("is_duplicate"))
     st.write(
@@ -413,11 +346,8 @@ def _build_class_list_lines(edited_df):
 
 
 def main():
-    page = sidebar()
-    if page == "Upload official list":
-        upload_page()
-    elif page == "Check client wording":
-        check_page()
+    sidebar()
+    check_page()
 
 
 if __name__ == "__main__":

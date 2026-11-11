@@ -1,20 +1,9 @@
 # Secrets — never commit real API keys
 .streamlit/secrets.toml
 
-# The IPOS/MyIPO list data itself (data/reference/*/versions/*.json and
-# current.json) IS committed, so it survives a fresh clone / Streamlit Cloud
-# cold start without needing to re-upload. Only the TF-IDF cache is
-# excluded — it's regenerated automatically on first use, and pickled
-# scikit-learn objects can break across sklearn versions anyway.
-data/reference/*/versions/*.tfidf.pkl
-
 # Python
 __pycache__/
 *.pyc
 
 # Logs
 *.log
-
-# Legacy Flask prototype — superseded by streamlit_app.py
-app.py
-templates/

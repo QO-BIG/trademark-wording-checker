@@ -354,7 +354,40 @@ def build_excel_report(edited_df):
                     cell.font = NON_STANDARD_FONT
                 if is_duplicate:
                     cell.fill = DUPLICATE_FILL
+
+        class_list_lines = _build_class_list_lines(edited_df)
+        pd.DataFrame({"": class_list_lines}).to_excel(
+            writer, index=False, header=False, sheet_name="Class List"
+        )
     return buf.getvalue()
+
+
+def _build_class_list_lines(edited_df):
+    """Groups the (possibly user-edited) rows by Class, using the final
+    wording per item (Suggestion if present, else the original wording),
+    formatted as ready-to-paste "Class N" / semicolon-list blocks."""
+    groups = {}
+    order = []
+    for _, row in edited_df.fillna("").iterrows():
+        cls = str(row.get("Class", "")).strip()
+        suggestion = str(row.get("Suggestion", "")).strip()
+        wording = str(row.get("Client wording", "")).strip()
+        final_wording = (suggestion or wording).rstrip(";").strip()
+        if not final_wording:
+            continue
+        if cls not in groups:
+            groups[cls] = []
+            order.append(cls)
+        groups[cls].append(final_wording)
+
+    lines = []
+    for cls in order:
+        lines.append(f"Class {cls}" if cls else "Class (unspecified)")
+        lines.append("; ".join(groups[cls]) + ";")
+        lines.append("")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
 
 
 def main():

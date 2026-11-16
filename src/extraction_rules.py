@@ -278,56 +278,78 @@ def _layout_d_class_marker_blocks(tables):
     return items
 
 
-_HEADER_KEYWORDS = ("item", "wording", "description", "goods", "service")
+# Tried in priority order. "english"/"\ben\b" come first because a header
+# naming both an English and a translation column (e.g. "Goods in CN" /
+# "Goods in EN") would otherwise match the generic "goods" keyword on the
+# WRONG (translation) column — only one of the two headers actually says
+# which language it is, so checking for that first disambiguates them.
+_HEADER_KEYWORDS = ("english", r"\ben\b", "item", "wording", "description", "goods", "service")
 
 
 def _find_class_marker_in_row(row):
-    """Returns the class number if this row has a cell containing the word
-    "class" and another cell that's purely a 1-2 digit number — e.g.
-    ["Nice class", "06", "", ""]. Returns None otherwise."""
-    if not any(re.search(r"\bclass\b", cell, re.IGNORECASE) for cell in row):
-        return None
+    """Returns the class number if this row declares a single class, either
+    as one combined cell ("CLASS 14", matched via _STANDALONE_CLASS_RE) or
+    as a separate label+number cell pair (["Nice class", "06", ...]).
+    Returns None otherwise."""
     for cell in row:
-        cell = cell.strip()
-        if re.fullmatch(r"\d{1,2}", cell):
-            return cell
+        m = _STANDALONE_CLASS_RE.match(cell.strip())
+        if m:
+            return m.group(1)
+    if any(re.search(r"\bclass\b", cell, re.IGNORECASE) for cell in row):
+        for cell in row:
+            cell = cell.strip()
+            if re.fullmatch(r"\d{1,2}", cell):
+                return cell
     return None
+
+
+MAX_HEADER_CELL_CHARS = 20
 
 
 def _find_header_term_col(row):
     """Finds the wording column by header keyword, trying the most specific
-    keyword first ("item") before falling back to vaguer ones ("goods"/
-    "service", which can also match a section title cell like "Goods or
-    Services" that spans the row rather than naming one column)."""
+    keyword first before falling back to vaguer ones ("goods"/"service",
+    which can also match a section title cell like "Goods or Services" that
+    spans the row rather than naming one column). Only short, label-like
+    cells count — a metadata field like "applicant's name in English" also
+    contains the word "English" but is a 28-character descriptive label, not
+    a 2-3 word column header; without this guard that row gets mistaken for
+    the real header several rows later."""
     for kw in _HEADER_KEYWORDS:
         for ci, cell in enumerate(row):
-            if re.search(kw, cell, re.IGNORECASE):
+            if len(cell.strip()) <= MAX_HEADER_CELL_CHARS and re.search(kw, cell, re.IGNORECASE):
                 return ci
     return None
 
 
 def _layout_e_single_class_table(tables):
-    """A metadata/info-sheet table: a row stating the class (e.g. "Nice
-    class" | "06"), followed eventually by a header row naming the wording
-    column, followed by that class's data rows until the next class-stating
-    row or end of table."""
+    """A metadata/info-sheet table: a row stating the class (either combined
+    like "CLASS 14" or split like "Nice class" | "06"), plus a header row
+    naming the wording column — the header can appear once for the whole
+    table (shared across all class blocks) or right after each marker, so
+    it's searched for across the whole table rather than scoped to one
+    block. Data rows run from each marker to the next marker (or end of
+    table)."""
     items = []
     for grid in tables:
         marker_rows = [(i, cls) for i, row in enumerate(grid) if (cls := _find_class_marker_in_row(row))]
         if not marker_rows:
             continue
 
+        header_i, term_col = None, None
+        for ri, row in enumerate(grid):
+            col = _find_header_term_col(row)
+            if col is not None:
+                header_i, term_col = ri, col
+                break
+        if header_i is None:
+            continue  # no recognizable wording-column header anywhere — don't guess
+
         for block_idx, (marker_i, cls) in enumerate(marker_rows):
             block_end = marker_rows[block_idx + 1][0] if block_idx + 1 < len(marker_rows) else len(grid)
-            header_i, term_col = None, None
-            for ri in range(marker_i + 1, block_end):
-                col = _find_header_term_col(grid[ri])
-                if col is not None:
-                    header_i, term_col = ri, col
-                    break
-            if header_i is None:
-                continue  # no recognizable wording-column header in this block — don't guess
-            for row in grid[header_i + 1:block_end]:
+            start_i = max(marker_i + 1, header_i + 1)
+            for ri in range(start_i, block_end):
+                row = grid[ri]
                 if term_col >= len(row):
                     continue
                 cell = row[term_col].strip()

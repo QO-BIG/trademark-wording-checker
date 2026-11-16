@@ -4,6 +4,19 @@ import os
 
 import anthropic
 
+# Full, unambiguous names for each authority — used in prompts instead of the
+# bare acronym so the model can't conflate IPOS (Singapore) and MyIPO
+# (Malaysia) conventions, which differ in places despite sharing the NICE
+# classification as a base.
+AUTHORITY_LABELS = {
+    "ipos": "IPOS (the Intellectual Property Office of Singapore)",
+    "myipo": "MyIPO (the Intellectual Property Corporation of Malaysia)",
+}
+
+
+def authority_label(authority):
+    return AUTHORITY_LABELS.get((authority or "").strip().lower(), (authority or "").upper())
+
 
 def get_client(api_key=None):
     key = (api_key or os.environ.get("ANTHROPIC_API_KEY") or "").strip()

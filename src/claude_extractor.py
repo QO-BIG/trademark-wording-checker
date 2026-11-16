@@ -1,84 +1,95 @@
-"""Claude-driven extraction of a goods/services wording list from a client's
-document, in whatever format they happened to send it.
+"""Extracting a goods/services wording list from a client's document, in
+whatever format they happened to send it.
 
-Column-guessing heuristics break down fast in practice: a client's file
-might be a clean one-item-per-line list, a numbered table, a bilingual
-spreadsheet with English/Chinese columns, a multi-sheet workbook with one
-sheet per designated country, or — seen in a real example — an instruction
-letter where the goods list is buried as "GOODS IN CLASS 5: item1; item2;
-..." inside a two-column metadata table, surrounded by applicant details
-and boilerplate filing remarks. Rather than special-case every shape, the
-raw document content (every sheet/paragraph/table cell) is dumped to text
-and Claude is asked to pick out the actual wording items and their class.
+Most client files match one of a handful of common layouts (see
+extraction_rules.py) and are extracted with plain code, for free — a clean
+one-item-per-line list, a numbered table, a bilingual spreadsheet, or an
+instruction letter with the goods list embedded as "GOODS IN CLASS 5: item
+one; item two" inside a metadata table. Claude is only called when none of
+those layouts confidently apply, and even then it's asked for WHERE each
+class's text begins and ends (not to retype it) — that keeps the call small
+(locations, not a full retyped list — output is ~5x the cost of input, so
+this is the single biggest lever) and guarantees the extracted wording is
+character-for-character what the client wrote, since the surrounding code
+cuts it from the original text rather than Claude reproducing it.
 """
 import io
+import re
 
 import pandas as pd
+import pdfplumber
 from docx import Document
-from pypdf import PdfReader
 
-from .claude_client import get_client
+from . import extraction_rules
+from .claude_client import authority_label, get_client
 
-DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_MODEL = "claude-haiku-4-5"
 # Overall safety ceiling on how much of a document gets sent at all.
 MAX_DUMP_CHARS = 200000
-# Per-call chunk size. A single extraction call over too much content risks
-# the structured-output response getting cut off mid-generation once there
-# are enough items to exceed the response token budget (seen in practice on
-# a ~430-item spreadsheet with the old single-call approach, which silently
-# produced nothing usable) — chunking keeps each call's expected output
-# small enough to always complete.
-CHUNK_CHARS = 12000
+# Output here is a handful of {class, start, end} markers, not retyped item
+# text, so it doesn't scale with document size the way full extraction did —
+# a small cap is genuinely enough, not just optimistic.
+LOCATION_MAX_TOKENS = 2048
+# If a document has so many distinct class sections that even the location
+# list overflows, bisect and retry each half rather than losing the rest
+# silently. Guards against runaway recursion on a pathological document.
+MAX_SPLIT_DEPTH = 4
 
-EXTRACTION_TOOL = {
-    "name": "report_extracted_wording",
-    "description": "Report every goods/services wording item found in the document.",
+LOCATION_TOOL = {
+    "name": "report_extraction_locations",
+    "description": (
+        "Report WHERE each NICE class's goods/services text begins and ends in the document content "
+        "below, so the surrounding code can cut and split it out verbatim. Do not retype, correct, or "
+        "paraphrase the wording yourself."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "items": {
+            "sections": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
                         "class": {
                             "type": "string",
-                            "description": "NICE classification class number for this item, as stated or clearly implied by the document (e.g. a 'GOODS IN CLASS 5:' label, or a class column/header covering a block of rows). Empty string if not determinable.",
+                            "description": "NICE class number for this section, as stated or clearly implied by the document. Empty string if not determinable.",
                         },
-                        "term": {
+                        "start": {
                             "type": "string",
-                            "description": "The exact English goods/services wording for this single item, split out from any surrounding list punctuation, verbatim as written (do not rewrite, correct, or standardize it).",
+                            "description": "The first 3-8 words of this class's goods/services text, copied EXACTLY verbatim from the document content below (identical spelling, spacing, case) so the surrounding code can locate where it begins.",
+                        },
+                        "end": {
+                            "type": "string",
+                            "description": "The last 3-8 words of this class's goods/services text (inclusive of the final item), copied EXACTLY verbatim from the document content below, so the surrounding code can locate where it ends.",
                         },
                     },
-                    "required": ["class", "term"],
+                    "required": ["class", "start", "end"],
                 },
             }
         },
-        "required": ["items"],
+        "required": ["sections"],
     },
 }
 
-EXTRACTION_SYSTEM_PROMPT = """You are extracting a goods/services wording list from a client's trademark \
-filing document for a {authority} application. Clients send this in wildly different formats — a clean \
-one-item-per-line list, a numbered table, an application instruction letter with the goods list embedded \
-part-way through (e.g. a line like "GOODS IN CLASS 5: item one; item two; item three" inside a metadata \
-table, mixed in with applicant details and boilerplate remarks), a bilingual spreadsheet with English and \
-Chinese columns side by side, a multi-sheet workbook with one sheet per designated country, a spreadsheet \
-with a merged "Class" column where the class number is only written once per block of rows, etc.
+LOCATION_SYSTEM_PROMPT = """You are helping locate the goods/services wording in a client's trademark \
+filing document for a {authority} application, so surrounding code can extract it verbatim. Clients send \
+this in all kinds of formats — a plain list, a numbered table, an instruction letter with the goods list \
+embedded part-way through (e.g. "GOODS IN CLASS 5: item one; item two; item three" inside a metadata table, \
+mixed in with applicant details and boilerplate remarks), a bilingual spreadsheet with English and Chinese \
+columns side by side, a spreadsheet with a merged "Class" column where the class number is only written \
+once per block of rows, etc.
 
-Read the raw extracted content below (every sheet / paragraph / table cell from the original file) and \
-output ONLY the actual individual goods/services wording items, each with its NICE class if the document \
-states or clearly implies one. Rules:
-- Split semicolon/comma-separated lists embedded in a single cell or line (e.g. "GOODS IN CLASS 5: a; b; c") \
-into one item each, all carrying that same class.
-- Use the ENGLISH wording only — ignore any Chinese or other-language translation column or text.
+For each distinct NICE class's goods/services text in the document, report ONLY where it starts and ends \
+(a short verbatim snippet from each end) — do not type out the items yourself. Rules:
+- The start/end snippets must be copied EXACTLY as written in the document below (same spelling, spacing, \
+case) — not corrected, standardized, or paraphrased. Surrounding code does exact text matching against them.
+- If the document has multiple sheets/sections for different designated countries, only report the section \
+relevant to {authority} if you can tell which is which.
 - Ignore anything that is not a goods/services item: applicant name/address/dates, headers, column titles, \
-page numbers, running row numbers, filing instructions, disclaimers, trademark names.
-- If the document has multiple sheets/sections for different designated countries, extract only the one \
-relevant to {authority} if you can tell which is which; otherwise extract everything you find and leave \
-class empty where unclear rather than guessing.
-- Preserve each item's wording exactly as written — do not rewrite, correct spelling, or standardize it. A \
-separate step reviews wording quality; your only job here is faithful extraction.
+page numbers, running row numbers, filing instructions, disclaimers, trademark names, and any Chinese or \
+other-language translation column or text.
+- If a class's goods/services text is not contiguous (e.g. split across two different sheets or table \
+blocks), report it as separate sections sharing the same class.
 """
 
 
@@ -104,11 +115,14 @@ def build_raw_dump(file_bytes, filename, max_chars=MAX_DUMP_CHARS):
         text = file_bytes.decode("utf-8", errors="replace")
 
     elif lower.endswith(".pdf"):
-        reader = PdfReader(io.BytesIO(file_bytes))
+        # Converted to plain text here, never sent to Claude as a file — a
+        # PDF passed as a file gets read as page images, which costs far
+        # more than the same content as plain text.
         parts = []
-        for i, page in enumerate(reader.pages, 1):
-            parts.append(f"=== Page {i} ===")
-            parts.append(page.extract_text() or "")
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for i, page in enumerate(pdf.pages, 1):
+                parts.append(f"=== Page {i} ===")
+                parts.append(page.extract_text() or "")
         text = "\n".join(parts)
 
     elif lower.endswith(".docx"):
@@ -127,42 +141,107 @@ def build_raw_dump(file_bytes, filename, max_chars=MAX_DUMP_CHARS):
     return (text[:max_chars] if truncated else text), truncated
 
 
-def _chunk_text(text, chunk_size=CHUNK_CHARS):
-    """Splits on line boundaries so a single row's wrapped continuation
-    text isn't likely to be torn apart mid-chunk."""
-    lines = text.split("\n")
-    chunks, current, current_len = [], [], 0
-    for line in lines:
-        current.append(line)
-        current_len += len(line) + 1
-        if current_len >= chunk_size:
-            chunks.append("\n".join(current))
-            current, current_len = [], 0
-    if current:
-        chunks.append("\n".join(current))
-    return chunks or [text]
+def _find_marker(haystack, marker, start_pos=0):
+    """Finds `marker` in haystack[start_pos:], tolerant of whitespace
+    differences (collapsed runs, wrapped lines) but not wording differences
+    — this is exact-text location, not fuzzy matching. Returns (start, end)
+    absolute indices into haystack, or None if not found."""
+    words = marker.split()
+    if not words:
+        return None
+    pattern = r"\s+".join(re.escape(w) for w in words)
+    m = re.search(pattern, haystack[start_pos:], re.IGNORECASE)
+    if not m:
+        return None
+    return start_pos + m.start(), start_pos + m.end()
 
 
-def _extract_from_chunk(client, chunk, filename, authority, model, part_info):
+def _split_span_into_items(span_text):
+    """A located span may be a single semicolon-joined line, or several
+    table rows (each on its own line, possibly with leftover " | " column
+    joins from build_raw_dump). Split on newlines first, then semicolons
+    within each line — never commas, which real official terms routinely
+    contain internally."""
+    items = []
+    for line in span_text.split("\n"):
+        line = line.strip().strip("|").strip()
+        if not line:
+            continue
+        pieces = [p.strip() for p in line.split(";")]
+        items.extend(p for p in pieces if p)
+    return items
+
+
+def _resolve_sections(raw_text, sections):
+    items = []
+    for sec in sections:
+        start_marker = (sec.get("start") or "").strip()
+        end_marker = (sec.get("end") or "").strip()
+        if not start_marker or not end_marker:
+            continue
+        start_span = _find_marker(raw_text, start_marker)
+        if not start_span:
+            continue
+        end_span = _find_marker(raw_text, end_marker, start_pos=start_span[0])
+        if not end_span:
+            continue
+        span_text = raw_text[start_span[0]:end_span[1]]
+        cls = sec.get("class", "")
+        for term in _split_span_into_items(span_text):
+            items.append({"class": cls, "term": term})
+    return items
+
+
+def _call_location_extraction(client, raw_text, filename, authority, model):
+    """One API call. Returns (sections, stop_reason) — sections are
+    {"class", "start", "end"} location markers, not retyped item text."""
     prompt = (
         f"Filename: {filename}\n"
-        f"Target authority for this check: {authority.upper()}\n"
-        f"{part_info}\n\n"
+        f"Target authority for this check: {authority_label(authority)}\n\n"
         "Raw extracted document content follows:\n-----\n"
-        f"{chunk}\n-----"
+        f"{raw_text}\n-----"
     )
     resp = client.messages.create(
         model=model,
-        max_tokens=8192,
-        system=EXTRACTION_SYSTEM_PROMPT.format(authority=authority.upper()),
-        tools=[EXTRACTION_TOOL],
-        tool_choice={"type": "tool", "name": "report_extracted_wording"},
+        max_tokens=LOCATION_MAX_TOKENS,
+        system=[{
+            "type": "text",
+            "text": LOCATION_SYSTEM_PROMPT.format(authority=authority_label(authority)),
+            "cache_control": {"type": "ephemeral"},
+        }],
+        tools=[LOCATION_TOOL],
+        tool_choice={"type": "tool", "name": "report_extraction_locations"},
         messages=[{"role": "user", "content": prompt}],
     )
+    sections = []
     for block in resp.content:
-        if block.type == "tool_use" and block.name == "report_extracted_wording":
-            return block.input.get("items", [])
-    return []
+        if block.type == "tool_use" and block.name == "report_extraction_locations":
+            sections = block.input.get("sections", [])
+    return sections, resp.stop_reason
+
+
+def _extract_locations(client, raw_text, filename, authority, model, depth=0):
+    """Gets location markers for raw_text and resolves them into items. If
+    the response is cut off (rare — output is tiny) the text is bisected on
+    line boundaries and each half retried independently, same self-healing
+    pattern as the old chunked extractor."""
+    try:
+        sections, stop_reason = _call_location_extraction(client, raw_text, filename, authority, model)
+    except Exception:
+        sections, stop_reason = [], "max_tokens"
+
+    if stop_reason == "max_tokens" and depth < MAX_SPLIT_DEPTH:
+        lines = raw_text.split("\n")
+        if len(lines) > 1:
+            mid = len(lines) // 2
+            left, right = "\n".join(lines[:mid]), "\n".join(lines[mid:])
+            return (
+                _extract_locations(client, left, filename, authority, model, depth + 1)
+                + _extract_locations(client, right, filename, authority, model, depth + 1)
+            )
+        return []
+
+    return _resolve_sections(raw_text, sections)
 
 
 def extract_wording_with_claude(
@@ -170,22 +249,35 @@ def extract_wording_with_claude(
 ):
     """Returns (items, truncated) where items is a list of {"class","term"}.
 
-    Large documents are split into chunks and extracted independently —
-    one call over too much content risks the structured-output response
-    getting cut off mid-generation once there are enough items to exceed
-    the response token budget."""
+    Stage 1 (free): tries the plain-code layout detectors in
+    extraction_rules.py. Most client files match one of a handful of common
+    shapes and need no API call at all.
+
+    Stage 2 (paid, minimal): only if stage 1 isn't confident, asks Claude
+    (Haiku — locating text spans is mechanical, not a judgment call) for
+    WHERE each class's text is, not to retype it. The surrounding code cuts
+    the exact original text from those locations, which is both cheaper
+    (output is a handful of short markers, not a full retyped list) and
+    more faithful (the client's exact wording, not Claude's transcription
+    of it).
+    """
+    try:
+        rule_items, confident = extraction_rules.extract_via_rules(file_bytes, filename)
+    except Exception:
+        rule_items, confident = [], False
+
+    if confident:
+        if progress_callback:
+            progress_callback(1, 1)
+        return rule_items, False
+
     raw_text, truncated = build_raw_dump(file_bytes, filename)
     if not raw_text.strip():
         return [], truncated
 
     client = get_client(api_key)
-    chunks = _chunk_text(raw_text)
-
-    all_items = []
-    for i, chunk in enumerate(chunks):
-        part_info = f"(Part {i + 1} of {len(chunks)} of the document content.)" if len(chunks) > 1 else ""
-        all_items.extend(_extract_from_chunk(client, chunk, filename, authority, model, part_info))
-        if progress_callback:
-            progress_callback(i + 1, len(chunks))
-
-    return all_items, truncated
+    items = _extract_locations(client, raw_text, filename, authority, model)
+    extraction_rules.flag_duplicates(items)
+    if progress_callback:
+        progress_callback(1, 1)
+    return items, truncated

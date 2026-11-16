@@ -1,9 +1,17 @@
-"""Streamlit app: upload a client's goods/services wording and get
-Claude-reviewed suggestions — Claude judges standard/non-standard and
-suggests corrections from its own knowledge of IPOS/MyIPO conventions, the
-same as pasting the document into a Claude chat and asking it to check it.
-There is no local reference list; nothing here is grounded in a downloaded,
-verifiable official list.
+"""Streamlit app: upload a client's goods/services wording and get it
+checked against the official IPOS/MyIPO wording list. Both stages try a
+free path before paying for Claude:
+
+- Extraction: most client files match one of a handful of common layouts
+  (extraction_rules.py) and are parsed with plain code. Claude is only
+  asked to locate the relevant text (not retype it) when none of those
+  layouts confidently apply.
+- Matching: an exact match (or a match under a different class) in the
+  downloaded official list is a yes/no fact, not a judgment call — looked
+  up for free. Only items with no match anywhere in the official list go
+  to Claude, which suggests a correction from its own knowledge of
+  IPOS/MyIPO/NICE conventions, since there's no official "closest
+  correction" to look up for those.
 
 Run with: streamlit run streamlit_app.py
 """
@@ -70,9 +78,10 @@ def _normalize_literal(text):
 def check_page():
     st.title("Check client wording")
     st.caption(
-        "Upload the client's requested goods/services wording. Claude reads the document directly and "
-        "reviews each item against its own knowledge of IPOS/MyIPO classification conventions — there's no "
-        "downloaded official list behind this, so treat suggestions as a strong first pass, not a verified source."
+        "Upload the client's requested goods/services wording. Most files are read with plain code for free; "
+        "Claude only steps in to locate the wording when the layout isn't one it recognizes. Each item is then "
+        "checked against the official IPOS/MyIPO wording list for free — only items with no exact match go to "
+        "Claude for a suggested correction."
     )
 
     authority = st.selectbox("Check against", ["ipos", "myipo"], format_func=str.upper, key="check_authority_select")
@@ -81,17 +90,19 @@ def check_page():
     if uploaded is None:
         return
 
+    # No upfront API-key gate here — extraction and matching are both
+    # free-first, so a file matching a recognized layout with all-standard
+    # wording can complete the whole check with zero Claude calls. A key is
+    # only required if/when something actually needs Claude, surfaced as an
+    # error at that point instead.
     api_key = get_api_key()
-    if not api_key:
-        st.error("No Anthropic API key configured — add ANTHROPIC_API_KEY to .streamlit/secrets.toml first.")
-        return
 
     cache_key = (uploaded.name, uploaded.size, authority)
     if st.session_state.get("check_cache_key") != cache_key:
-        progress = st.progress(0.0, text=f"Reading {uploaded.name} with Claude...")
+        progress = st.progress(0.0, text=f"Reading {uploaded.name}...")
 
         def on_extract_progress(done, total):
-            progress.progress(done / total if total else 1.0, text=f"Reading {uploaded.name} with Claude... part {done}/{total}")
+            progress.progress(done / total if total else 1.0, text=f"Reading {uploaded.name}...")
 
         try:
             items, truncated = claude_extractor.extract_wording_with_claude(
@@ -99,7 +110,7 @@ def check_page():
                 progress_callback=on_extract_progress,
             )
         except Exception as e:
-            st.error(f"Claude document extraction failed: {e}")
+            st.error(f"Document extraction failed: {e}")
             return
         progress.empty()
         if truncated:
@@ -108,7 +119,11 @@ def check_page():
                 "items near the end of the file may be missing. Consider splitting it into smaller files."
             )
         st.session_state["check_rows"] = [
-            {"class": it.get("class", ""), "term": it.get("term", "")}
+            {
+                "class": it.get("class", ""),
+                "term": it.get("term", ""),
+                "duplicate": "Yes" if it.get("is_duplicate") else "",
+            }
             for it in items if str(it.get("term", "")).strip()
         ]
         st.session_state["check_cache_key"] = cache_key
@@ -119,9 +134,17 @@ def check_page():
     uniq = f"{filename}_{uploaded.size}"
     rows = st.session_state["check_rows"]
 
-    st.caption("Edit any row below to fix misparsed entries before running the check.")
+    st.caption(
+        "Edit any row below to fix misparsed entries before running the check. Rows marked Duplicate repeat "
+        "another row's wording exactly as found in your file — nothing was removed; decide whether to keep both."
+    )
     edited_df = st.data_editor(
-        pd.DataFrame(rows), num_rows="dynamic", width="stretch", key=f"check_editor_{uniq}"
+        pd.DataFrame(rows), num_rows="dynamic", width="stretch", key=f"check_editor_{uniq}",
+        column_config={
+            "class": st.column_config.Column("Class"),
+            "term": st.column_config.Column("Term"),
+            "duplicate": st.column_config.Column("Duplicate", disabled=True),
+        },
     )
 
     if st.button("Run check", type="primary"):
@@ -133,14 +156,22 @@ def check_page():
         terms = [r["term"] for r in final_rows]
         classes = [r.get("class", "") for r in final_rows]
 
-        progress = st.progress(0.0, text="Reviewing with Claude...")
+        progress = st.progress(0.0, text="Checking against the official wording list...")
+
+        def on_split(free_count, agent_count):
+            if agent_count:
+                progress.progress(0.0, text=f"{free_count} matched the official list for free — sending {agent_count} to Claude for review...")
+            else:
+                progress.progress(1.0, text=f"All {free_count} items matched the official list for free — no Claude review needed.")
 
         def on_progress(done, total):
-            progress.progress(done / total if total else 1.0, text=f"Reviewing with Claude... {done}/{total}")
+            if total:
+                progress.progress(done / total, text=f"Reviewing with Claude... {done}/{total}")
 
         try:
             results = claude_matcher.match_terms_with_claude(
-                terms, authority, client_classes=classes, api_key=api_key, progress_callback=on_progress
+                terms, authority, client_classes=classes, api_key=api_key,
+                progress_callback=on_progress, split_callback=on_split,
             )
         except Exception as e:
             st.error(f"Claude review failed: {e}")

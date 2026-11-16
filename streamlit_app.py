@@ -123,6 +123,7 @@ def check_page():
                 "class": it.get("class", ""),
                 "term": it.get("term", ""),
                 "duplicate": "Yes" if it.get("is_duplicate") else "",
+                "needs_review": "Yes" if it.get("needs_review") else "",
             }
             for it in items if str(it.get("term", "")).strip()
         ]
@@ -134,6 +135,14 @@ def check_page():
     uniq = f"{filename}_{uploaded.size}"
     rows = st.session_state["check_rows"]
 
+    needs_review_count = sum(1 for r in rows if r.get("needs_review"))
+    if needs_review_count:
+        st.warning(
+            f"{needs_review_count} row(s) marked **Needs Review** — the extraction found something that "
+            "looks like a leftover formatting artifact (e.g. a mixed-up column join). Please check and "
+            "correct these rows manually before running the check."
+        )
+
     st.caption(
         "Edit any row below to fix misparsed entries before running the check. Rows marked Duplicate repeat "
         "another row's wording exactly as found in your file — nothing was removed; decide whether to keep both."
@@ -144,6 +153,7 @@ def check_page():
             "class": st.column_config.Column("Class"),
             "term": st.column_config.Column("Term"),
             "duplicate": st.column_config.Column("Duplicate", disabled=True),
+            "needs_review": st.column_config.Column("Needs Review", disabled=True),
         },
     )
 

@@ -75,7 +75,12 @@ def _split_semicolons(text):
     return deduped
 
 
-def _ascii_ratio(text):
+def ascii_ratio(text):
+    """Fraction of characters that are ASCII — used to pick the English
+    column out of a row that also has a Chinese/translation column, without
+    needing a header keyword to name which one is which. Public: also used
+    by claude_extractor.py's Claude-fallback path to make it table-aware for
+    layouts that have no dedicated rule yet (see _pick_term_cell there)."""
     text = text or ""
     if not text:
         return 0.0
@@ -195,7 +200,7 @@ def _layout_b_class_column_table(tables):
             samples = [row[col_idx] for row in grid[1:] if col_idx < len(row) and row[col_idx]]
             if not samples:
                 return -1.0
-            return sum(_ascii_ratio(s) for s in samples) / len(samples)
+            return sum(ascii_ratio(s) for s in samples) / len(samples)
 
         term_col = max(candidate_cols, key=ascii_score)
         if ascii_score(term_col) < 0.8:
@@ -364,6 +369,15 @@ def _layout_e_single_class_table(tables):
 # Step 3: validation (free) — only a confidently-correct result skips Claude
 # --------------------------------------------------------------------------
 
+def looks_corrupted(term):
+    """A literal "|" surviving into a term is always a sign of an un-split
+    table-row-join artifact (flat_lines joins cells with " | ") — no real
+    official wording ever contains one. This is a layout-independent safety
+    net: it catches a bad split regardless of which rule produced it, or
+    whether it came from a named layout at all vs. the Claude fallback."""
+    return "|" in (term or "")
+
+
 def validate_items(items):
     if not items:
         return False
@@ -371,7 +385,8 @@ def validate_items(items):
         norm_cls = normalize_class(it.get("class", ""))
         if not norm_cls or not norm_cls.isdigit() or not (MIN_CLASS <= int(norm_cls) <= MAX_CLASS):
             return False
-        if len(it.get("term", "")) > MAX_ITEM_CHARS:
+        term = it.get("term", "")
+        if len(term) > MAX_ITEM_CHARS or looks_corrupted(term):
             return False
     return True
 

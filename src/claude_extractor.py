@@ -156,18 +156,40 @@ def _find_marker(haystack, marker, start_pos=0):
     return start_pos + m.start(), start_pos + m.end()
 
 
+def _pick_term_cell(line):
+    """A table row flattened by build_raw_dump looks like "1 | 日本指定商品 |
+    Chemicals for use in industry". Rather than keeping the whole joined
+    line (which drags in row numbers and any translation column — the exact
+    bug this fixes), split on "|" and keep whichever cell looks most like
+    real English wording: highest ASCII ratio among cells that aren't pure
+    row numbers, tie-broken by length. This is what makes the Claude
+    fallback self-adapting to a table-shaped layout nobody has coded a named
+    rule for yet, instead of only working for the specific layouts already
+    recognized by extraction_rules.py.
+
+    A plain paragraph line (no "|") passes through unchanged — this only
+    kicks in for genuinely multi-column rows."""
+    if "|" not in line:
+        return line.strip()
+    cells = [c.strip() for c in line.split("|") if c.strip()]
+    candidates = [c for c in cells if not re.fullmatch(r"\d+\.?", c)]
+    if not candidates:
+        return line.strip()
+    return max(candidates, key=lambda c: (extraction_rules.ascii_ratio(c), len(c)))
+
+
 def _split_span_into_items(span_text):
     """A located span may be a single semicolon-joined line, or several
-    table rows (each on its own line, possibly with leftover " | " column
-    joins from build_raw_dump). Split on newlines first, then semicolons
-    within each line — never commas, which real official terms routinely
-    contain internally."""
+    table rows (each on its own line). Split on newlines first, pick the
+    real wording cell out of each line (see _pick_term_cell), then split on
+    semicolons within that cell — never commas, which real official terms
+    routinely contain internally."""
     items = []
     for line in span_text.split("\n"):
-        line = line.strip().strip("|").strip()
-        if not line:
+        cell = _pick_term_cell(line)
+        if not cell:
             continue
-        pieces = [p.strip() for p in line.split(";")]
+        pieces = [p.strip() for p in cell.split(";")]
         items.extend(p for p in pieces if p)
     return items
 
@@ -278,6 +300,15 @@ def extract_wording_with_claude(
     client = get_client(api_key)
     items = _extract_locations(client, raw_text, filename, authority, model)
     extraction_rules.flag_duplicates(items)
+    # Unlike the free layouts (which simply fall back to Claude if
+    # validate_items rejects them), there's no further fallback tier here —
+    # so a term that still looks corrupted (see looks_corrupted) is flagged
+    # for manual review rather than either silently shipped or silently
+    # dropped. _pick_term_cell should prevent this in practice, but a team
+    # relying on this tool for files I've never seen needs a visible signal
+    # if it ever doesn't, not a silent wrong answer.
+    for it in items:
+        it["needs_review"] = extraction_rules.looks_corrupted(it.get("term", ""))
     if progress_callback:
         progress_callback(1, 1)
     return items, truncated

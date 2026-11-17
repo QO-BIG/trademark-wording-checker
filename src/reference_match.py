@@ -121,6 +121,37 @@ class ReferenceIndex:
 
         return "non_standard", None, None
 
+    def lookup_compound(self, cls, term):
+        """Like lookup(), but if the whole string isn't a match, also tries
+        splitting it on a bare " and " (word-boundary, case-insensitive) and
+        checking whether EVERY resulting piece is independently standard in
+        the same class — e.g. "Chip cards and smart cards" isn't itself a
+        listed term, but "Chip cards" and "Smart cards" both are. Confirmed
+        against real IPOS data: exactly this case was found by manual
+        checking before this method existed. Returns a fourth element,
+        is_compound, True only when this path produced the result — the
+        officials are joined with "; ", matching the convention already
+        used elsewhere for a client line naming more than one accepted
+        concept. Falls through to ordinary lookup() (is_compound=False)
+        whenever the split doesn't fully resolve, rather than guessing."""
+        status, official, correct_class = self.lookup(cls, term)
+        if status != "non_standard":
+            return status, official, correct_class, False
+
+        parts = re.split(r"\s+and\s+", term, flags=re.IGNORECASE)
+        parts = [p.strip() for p in parts if p.strip()]
+        if len(parts) < 2:
+            return status, official, correct_class, False
+
+        officials = []
+        for part in parts:
+            part_status, part_official, _ = self.lookup(cls, part)
+            if part_status != "standard":
+                return status, official, correct_class, False  # not every piece matches — don't guess
+            officials.append(part_official)
+
+        return "standard", "; ".join(officials), None, True
+
 
 def classify_items_locally(items, reference_index):
     """items: list of {"class": ..., "term": ...} (the extraction step's

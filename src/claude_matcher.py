@@ -192,9 +192,9 @@ def match_terms_with_claude(
     agent_indices = []
     for i, (term, cls) in enumerate(zip(client_terms, classes)):
         if ref_index is not None:
-            status, official_term, correct_class = ref_index.lookup(cls, term)
+            status, official_term, correct_class, is_compound = ref_index.lookup_compound(cls, term)
         else:
-            status, official_term, correct_class = "non_standard", None, None
+            status, official_term, correct_class, is_compound = "non_standard", None, None, False
 
         if status == "non_standard":
             agent_indices.append(i)
@@ -206,12 +206,17 @@ def match_terms_with_claude(
         # in streamlit_app.py flag the mismatch automatically, same as it
         # already does for a Claude-sourced suggestion.
         suggestion_class = correct_class if status == "standard_wrong_class" else cls
+        reasoning = (
+            f"Both halves of this compound line are separately standard in the official {authority.upper()} list."
+            if is_compound else
+            f"Exact match in the official {authority.upper()} wording list."
+        )
         results[i] = {
             "input": term,
             "status": "standard",
             "best_score": None,
             "suggestions": [{"term": official_term, "class": suggestion_class, "score": None}],
-            "reasoning": f"Exact match in the official {authority.upper()} wording list.",
+            "reasoning": reasoning,
         }
 
     if split_callback:

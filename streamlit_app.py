@@ -257,7 +257,7 @@ def render_results(data):
             "Class": r.get("class", ""),
             "Client wording": r["input"],
             "Status": "Standard" if r["status"] == "standard" else "Non-standard",
-            "Suggestion": r["suggestions"][0]["term"] if r["suggestions"] else "",
+            "Proposed Solution": r["suggestions"][0]["term"] if r["suggestions"] else "",
             "Alternatives": "; ".join(s["term"] for s in r["suggestions"][1:]),
             "Duplicate": "Yes" if r.get("is_duplicate") else "",
             "Reasoning": r.get("reasoning", ""),
@@ -307,7 +307,7 @@ DUPLICATE_FILL = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type
 
 
 def build_excel_report(edited_df):
-    """Mirrors the working 'Goods Items / Your Suggestion' format: class
+    """Mirrors the working 'Goods Items / Proposed Solution' format: class
     shown once per block, row number restarting at 1 per class. Built from
     the (possibly user-edited) results table, so manual corrections are
     reflected in the download. Non-standard rows get red font; rows that
@@ -321,14 +321,14 @@ def build_excel_report(edited_df):
         cls = str(row.get("Class", "")).strip()
         running_no[cls] = running_no.get(cls, 0) + 1
         item_text = str(row.get("Client wording", "")).strip()
-        suggestion_text = str(row.get("Suggestion", "")).strip()
+        suggestion_text = str(row.get("Proposed Solution", "")).strip()
         if item_text.endswith(";") and suggestion_text and not suggestion_text.endswith(";"):
             suggestion_text += ";"
         out_rows.append({
             "Classes": cls if cls != last_class else "",
             "No.": running_no[cls],
             "Goods Items": item_text,
-            "Your Suggestion": suggestion_text,
+            "Proposed Solution": suggestion_text,
             "Alternatives": str(row.get("Alternatives", "")).strip(),
             "Notes": str(row.get("Reasoning", "")).strip(),
         })
@@ -360,13 +360,13 @@ def build_excel_report(edited_df):
 
 def _build_class_list_lines(edited_df):
     """Groups the (possibly user-edited) rows by Class, using the final
-    wording per item (Suggestion if present, else the original wording),
+    wording per item (Proposed Solution if present, else the original wording),
     formatted as ready-to-paste "Class N" / semicolon-list blocks."""
     groups = {}
     order = []
     for _, row in edited_df.fillna("").iterrows():
         cls = str(row.get("Class", "")).strip()
-        suggestion = str(row.get("Suggestion", "")).strip()
+        suggestion = str(row.get("Proposed Solution", "")).strip()
         wording = str(row.get("Client wording", "")).strip()
         final_wording = (suggestion or wording).rstrip(";").strip()
         if not final_wording:

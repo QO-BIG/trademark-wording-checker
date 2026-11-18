@@ -206,10 +206,17 @@ def match_terms_with_claude(
         # in streamlit_app.py flag the mismatch automatically, same as it
         # already does for a Claude-sourced suggestion.
         suggestion_class = correct_class if status == "standard_wrong_class" else cls
+        # No reasoning text for a plain exact match — "Standard" already
+        # says it matches; a filler sentence repeating that isn't worth
+        # reading for every row. Reasoning is reserved for flagging an
+        # actual issue: a non-standard verdict, a compound line (where the
+        # Proposed Solution visibly differs from the client's wording even
+        # though both halves are standard, so that difference needs a
+        # one-line explanation), or — via _add_cross_class_notes downstream
+        # — a class mismatch even on an otherwise-standard item.
         reasoning = (
-            f"Both halves of this compound line are separately standard in the official {authority.upper()} list."
-            if is_compound else
-            f"Exact match in the official {authority.upper()} wording list."
+            "Standard — the client's line combines two separately standard terms, listed here as both."
+            if is_compound else ""
         )
         results[i] = {
             "input": term,

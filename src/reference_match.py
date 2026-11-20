@@ -81,6 +81,20 @@ def load_authority_reference(authority, base_dir=None):
     return load_reference_rows(version_path)
 
 
+_STOPWORDS = {
+    "a", "an", "the", "for", "of", "and", "or", "to", "in", "on", "with", "other",
+    "than", "not", "purposes", "purpose", "use", "used", "using", "namely", "including",
+}
+
+
+def _significant_words(text):
+    """Lowercased, stopword-filtered words — used only to find candidate
+    official terms that share real vocabulary with a client's wording, not
+    for any exact-match decision."""
+    words = re.findall(r"[a-z]+", (text or "").lower())
+    return {w for w in words if len(w) > 2 and w not in _STOPWORDS}
+
+
 class ReferenceIndex:
     """Pre-built lookup index for one authority's official wording list."""
 
@@ -90,12 +104,18 @@ class ReferenceIndex:
         # norm_term -> list of (official_class_label, official_term), for the
         # "right wording, wrong class" check across every class
         self.by_term = {}
+        # significant word -> list of (norm_class, official_term), for
+        # find_candidates() — lets a genuinely non-standard item be reviewed
+        # against real nearby official terms instead of Claude's memory alone.
+        self.word_index = {}
 
         for row in rows:
             norm_cls = normalize_class(row["class"])
             norm_term = normalize_term(row["term"])
             self.by_class_and_term[(norm_cls, norm_term)] = row["term"]
             self.by_term.setdefault(norm_term, []).append((row["class"], row["term"]))
+            for word in _significant_words(row["term"]):
+                self.word_index.setdefault(word, []).append((norm_cls, row["term"]))
 
     def lookup(self, cls, term):
         """Returns one of:
@@ -120,6 +140,41 @@ class ReferenceIndex:
             return "standard_wrong_class", official_term, correct_class
 
         return "non_standard", None, None
+
+    def find_candidates(self, cls, term, top_n=12):
+        """Returns up to top_n real official terms that share significant
+        vocabulary with `term`, same class preferred over other classes,
+        ranked by word-overlap count. For items with no exact match (see
+        lookup()) — gives Claude real nearby terms to choose from instead of
+        relying purely on its own memory, which has been confirmed (against
+        real IPOS data) to sometimes confidently invent plausible-sounding
+        wording that doesn't actually exist on the list. Returns a list of
+        (class_label, official_term) tuples; empty if no shared vocabulary."""
+        norm_cls = normalize_class(cls)
+        words = _significant_words(term)
+        if not words:
+            return []
+
+        scores = {}
+        for w in words:
+            for entry in self.word_index.get(w, ()):
+                scores[entry] = scores.get(entry, 0) + 1
+
+        # Same class first, then by word-overlap count.
+        ranked = sorted(scores.items(), key=lambda kv: (kv[0][0] != norm_cls, -kv[1]))
+
+        seen_terms, out = set(), []
+        for (entry_cls, official_term), _score in ranked:
+            if official_term in seen_terms:
+                continue
+            seen_terms.add(official_term)
+            # entry_cls is normalized; look up a real-looking class label by
+            # re-deriving it isn't worth it here — normalized is fine, it's
+            # just shown to Claude as context, not written back as a result.
+            out.append((entry_cls, official_term))
+            if len(out) >= top_n:
+                break
+        return out
 
     def lookup_compound(self, cls, term):
         """Like lookup(), but if the whole string isn't a match, also tries

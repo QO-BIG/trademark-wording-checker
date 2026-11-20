@@ -121,6 +121,16 @@ to, not just the ones that need correcting.
 terminology, etc. Give the best-fitting real official term(s) as the suggestion. If you don't genuinely know \
 a correct official term for this, leave suggestion empty and say why in reasoning — never invent something \
 that merely sounds plausible.
+- Some items come with a list of "real official terms from the list with related vocabulary" — these are \
+pulled directly from the actual downloaded {authority} list by shared wording, not guessed. This has caught \
+real cases where a confident-sounding suggestion turned out not to exist on the list at all (e.g. suggesting \
+"Blood sugar monitoring apparatus for medical purposes" when the real official term is "Devices for measuring \
+blood sugar"). If one of the provided candidates is a genuine fit for the item, use it — don't propose your \
+own wording instead just because it sounds more natural or more precise. These candidates are related by \
+vocabulary only, not pre-verified matches, so check each one actually fits before using it; if none of them \
+do, fall back to your own knowledge as before, but don't claim unusual confidence in a self-generated term \
+when real candidates were available and didn't fit — say so in reasoning if you're going with your own \
+knowledge over the provided list.
 - If the client's single line actually names more than one distinct accepted concept (e.g. "glue and \
 adhesives for industrial purposes" really covers two separate official terms, "Glues for industrial \
 purposes" and "Adhesives for industrial purposes"), include every matching official term in the \
@@ -133,18 +143,24 @@ stated Class 42").
 Return exactly one result per item, using the item's "input" text verbatim so results can be matched back up."""
 
 
-def _format_batch_prompt(batch):
+def _format_batch_prompt(batch, ref_index=None):
     lines = []
     for i, (term, cls) in enumerate(batch, 1):
         lines.append(f"Item {i}:")
         lines.append(f'  Client wording: "{term}"')
         if cls:
             lines.append(f"  Client-specified NICE class: {cls}")
+        if ref_index is not None:
+            candidates = ref_index.find_candidates(cls, term)
+            if candidates:
+                lines.append("  Real official terms from the list with related vocabulary (prefer one of these if it genuinely fits; these are NOT necessarily the answer, just candidates to check):")
+                for cand_cls, cand_term in candidates:
+                    lines.append(f'    - [Class {cand_cls}] "{cand_term}"')
         lines.append("")
     return "\n".join(lines)
 
 
-def review_batch(batch, authority, api_key=None, model=DEFAULT_MODEL):
+def review_batch(batch, authority, api_key=None, model=DEFAULT_MODEL, ref_index=None):
     """batch: list of (term, client_class) tuples."""
     if not batch:
         return []
@@ -160,7 +176,7 @@ def review_batch(batch, authority, api_key=None, model=DEFAULT_MODEL):
         }],
         tools=[REVIEW_TOOL],
         tool_choice={"type": "tool", "name": "report_wording_review"},
-        messages=[{"role": "user", "content": _format_batch_prompt(batch)}],
+        messages=[{"role": "user", "content": _format_batch_prompt(batch, ref_index=ref_index)}],
     )
 
     for block in resp.content:
@@ -245,7 +261,7 @@ def match_terms_with_claude(
     agent_classes = [classes[i] for i in agent_indices]
     agent_results = _review_nonstandard_with_claude(
         agent_terms, authority, agent_classes, api_key=api_key, model=model,
-        batch_size=batch_size, progress_callback=progress_callback,
+        batch_size=batch_size, progress_callback=progress_callback, ref_index=ref_index,
     )
     for local_i, global_i in enumerate(agent_indices):
         results[global_i] = agent_results[local_i]
@@ -255,7 +271,7 @@ def match_terms_with_claude(
 
 def _review_nonstandard_with_claude(
     client_terms, authority, classes, api_key=None, model=DEFAULT_MODEL,
-    batch_size=DEFAULT_BATCH_SIZE, progress_callback=None,
+    batch_size=DEFAULT_BATCH_SIZE, progress_callback=None, ref_index=None,
 ):
     """Sends the (already pre-filtered to non-standard) terms to Claude for
     a suggested correction, in batches. Exact-duplicate wording (case/
@@ -283,7 +299,9 @@ def _review_nonstandard_with_claude(
     for start in range(0, total_unique, batch_size):
         batch_terms = unique_terms[start:start + batch_size]
         batch_classes = unique_classes[start:start + batch_size]
-        verdicts = review_batch(list(zip(batch_terms, batch_classes)), authority, api_key=api_key, model=model)
+        verdicts = review_batch(
+            list(zip(batch_terms, batch_classes)), authority, api_key=api_key, model=model, ref_index=ref_index,
+        )
         verdict_by_input = {v["input"]: v for v in verdicts}
 
         for term in batch_terms:

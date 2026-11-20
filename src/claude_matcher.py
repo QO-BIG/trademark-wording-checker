@@ -98,12 +98,24 @@ own conventions, not the other one's, even where they're very similar.
 For each item you are given the client's requested wording (and, when known, the NICE class the client \
 filed it under — this may not be the class it's actually correctly classified in).
 
+IMPORTANT: every item you see here has ALREADY been checked by code against the real, full official \
+{authority} wording list and confirmed to have NO exact match anywhere in it (under any class). That check \
+already happened before this item reached you — you are not verifying whether it's an exact match, that's \
+settled. So treat a "standard" verdict as the rare exception, not a default: only use it if you are highly \
+confident the wording is functionally identical to a real accepted term and the only differences are things \
+the exact-match check wouldn't have caught (e.g. a stray word boundary). If you find yourself reasoning "this \
+sounds like standard terminology" without being specifically sure of the exact accepted phrasing, that is a \
+"non_standard" case, not "standard" — give your best-fitting real term as the suggestion instead of waving it \
+through. A subtle wrong-word substitution that still sounds natural (e.g. "mobile phones" where the accepted \
+term specifically uses "mobile telephones") is exactly the kind of case this check exists to catch, and is the \
+most common way an item incorrectly gets called standard.
+
 Apply that professional judgment, per item, drawing on your own knowledge of accepted {authority} / NICE \
-classification wording — there is no reference list provided here, so rely on what you know to be genuinely \
-standard, accepted terminology rather than guessing at something plausible-sounding:
-- "standard": the client's wording already matches a real official term (differences limited to case, \
-punctuation, or whitespace only). Still report that matching official term as the suggestion — every item \
-should show the official wording it corresponds to, not just the ones that need correcting.
+classification wording — rely on what you know to be genuinely standard, accepted terminology rather than \
+guessing at something plausible-sounding:
+- "standard": see above — reserve this for genuine confidence, not a plausible-sounding match. Still report \
+that matching official term as the suggestion — every item should show the official wording it corresponds \
+to, not just the ones that need correcting.
 - "non_standard": anything an examiner would require amending — a synonym, non-standard business phrasing \
 (e.g. "online retail store services" instead of "retail services"), a typo, wrong specificity, outdated \
 terminology, etc. Give the best-fitting real official term(s) as the suggestion. If you don't genuinely know \

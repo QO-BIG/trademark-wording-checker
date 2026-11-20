@@ -200,6 +200,12 @@ def _layout_b_class_column_table(tables):
             samples = [row[col_idx] for row in grid[1:] if col_idx < len(row) and row[col_idx]]
             if not samples:
                 return -1.0
+            # A pure row-number column ("No." with values "1", "2", "3"...)
+            # is 100% ASCII too, so it can tie with — or beat — the real
+            # wording column on ascii_ratio alone. Disqualify it outright
+            # rather than letting digits compete with real text.
+            if all(re.fullmatch(r"\d+\.?", s.strip()) for s in samples):
+                return -1.0
             return sum(ascii_ratio(s) for s in samples) / len(samples)
 
         term_col = max(candidate_cols, key=ascii_score)
